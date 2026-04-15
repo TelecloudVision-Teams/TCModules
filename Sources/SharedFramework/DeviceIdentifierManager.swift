@@ -7,75 +7,208 @@
 
 import Foundation
 import Security
+import UIKit
 
 @objc(DeviceIdentifierManager)
 public class DeviceIdentifierManager: NSObject {
-    
+
+    // MARK: - Singleton
+
     @objc public static let shared = DeviceIdentifierManager()
-    var deviceIdentifier = UUID().uuidString
-    private let key = "UniqueDeviceIdentifier"
-    private let bundle = Bundle.main.bundleIdentifier ?? "unknown.bundle.identifier"
-    init(deviceIdentifier: String = UUID().uuidString) {
-        self.deviceIdentifier = deviceIdentifier
+
+    // Always non-nil. Starts with a random UUID, later overwritten by Keychain if available.
+    @objc public private(set) var deviceIdentifier: String
+
+    // MARK: - Private keys
+
+    private let accountKey = "UniqueDeviceIdentifier"
+    private let bundleId: String
+    private let service: String
+
+    // MARK: - Init
+
+    override private init() {
+        self.bundleId = Bundle.main.bundleIdentifier ?? "unknown.bundle.identifier"
+        self.service = bundleId + ".deviceidentifier"
+        self.deviceIdentifier = UUID().uuidString   // never nil
+
+        super.init()
+
+        // If protected data is already available, sync with Keychain immediately.
+        if UIApplication.shared.isProtectedDataAvailable {
+            _ = syncWithKeychain()
+        }
+
+        // When device unlocks after boot, this fires.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(protectedDataDidBecomeAvailable(_:)),
+            name: UIApplication.protectedDataDidBecomeAvailableNotification,
+            object: nil
+        )
     }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    // MARK: - Public API (Swift)
+
+    /// Main API. Returns Result so callers can know if Keychain failed.
+    /// Regardless of failure/success, `deviceIdentifier` is always non-nil.
     public func getDeviceIdentifier() -> Result<String, Error> {
-        if let existingIdentifier = loadDeviceIdentifier() {
-            deviceIdentifier = existingIdentifier
-            return .success(existingIdentifier)
+        // If protected data isn't available, do NOT touch Keychain.
+        guard UIApplication.shared.isProtectedDataAvailable else {
+            let error = NSError(
+                domain: "\(bundleId).Deviceidentifier.ProtectedData",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Protected data is not available; using in-memory deviceIdentifier only."]
+            )
+            // deviceIdentifier already has a valid UUID at all times.
+            return .failure(error)
+        }
+
+        if let stored = loadFromKeychain() {
+            if stored != deviceIdentifier {
+                deviceIdentifier = stored
+            }
+            return .success(stored)
+        }
+
+        // Nothing in Keychain → store current non-nil deviceIdentifier.
+        let idToStore = deviceIdentifier
+
+        switch saveToKeychain(idToStore) {
+        case .success:
+            return .success(idToStore)
+        case .failure(let error):
+            // Even if this fails, we still have `deviceIdentifier` in memory.
+            return .failure(error)
+        }
+    }
+
+    /// Convenience: non-Result version if you don't care about errors.
+    /// Always returns a non-empty String.
+    public func resolvedIdentifier() -> String {
+        switch getDeviceIdentifier() {
+        case .success(let id):
+            return id
+        case .failure:
+            return deviceIdentifier
+        }
+    }
+
+    // MARK: - Public API (Objective-C friendly)
+
+    /// Objective-C wrapper. Always returns a non-nil NSString.
+    /// On error, fills `error` and returns the current in-memory deviceIdentifier.
+    @objc
+    public func deviceIdentifierWithError(_ error: NSErrorPointer) -> NSString {
+        switch getDeviceIdentifier() {
+        case .success(let id):
+            return id as NSString
+        case .failure(let e):
+            error?.pointee = e as NSError
+            return deviceIdentifier as NSString
+        }
+    }
+
+    // MARK: - Protected data handling
+
+    @objc
+    private func protectedDataDidBecomeAvailable(_ notification: Notification) {
+        _ = syncWithKeychain()
+    }
+
+    /// Syncs in-memory `deviceIdentifier` with Keychain once protected data is available.
+    /// - If item exists in Keychain → load it and overwrite `deviceIdentifier`.
+    /// - If not → write current `deviceIdentifier` to Keychain.
+    @discardableResult
+    private func syncWithKeychain() -> Bool {
+        guard UIApplication.shared.isProtectedDataAvailable else { return false }
+
+        if let stored = loadFromKeychain() {
+            deviceIdentifier = stored
+            return true
         } else {
             switch saveToKeychain(deviceIdentifier) {
             case .success:
-                return .success(deviceIdentifier)
-            case .failure(let error):
-                return .failure(error)
+                return true
+            case .failure:
+                return false
             }
         }
     }
-    
-    private func loadDeviceIdentifier() -> String? {
+
+    // MARK: - Keychain
+
+    private func loadFromKeychain() -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: key,
-            kSecReturnData as String: kCFBooleanTrue!,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: accountKey,
+            kSecReturnData as String: kCFBooleanTrue as Any,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
-        
+
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        
-        if status == errSecSuccess {
-            if let data = result as? Data, let identifier = String(data: data, encoding: .utf8) {
-                return identifier
-            }
+
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let id = String(data: data, encoding: .utf8) else {
+            return nil
         }
-        
-        return nil
+
+        return id
     }
-    
-    private func generateDeviceIdentifier() -> String {
-        return UUID().uuidString
-    }
-    
+
     private func saveToKeychain(_ identifier: String) -> Result<Void, Error> {
         guard let data = identifier.data(using: .utf8) else {
-            return .failure(NSError(domain: "\(bundle).Deviceidentifier.Encoding.Error", code: 0))
+            let e = NSError(
+                domain: "\(bundleId).Deviceidentifier.Encoding",
+                code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to encode identifier as UTF-8."]
+            )
+            return .failure(e)
         }
-        
-        let query: [String: Any] = [
+
+        let baseQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: key,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: accountKey
         ]
-        
-        SecItemDelete(query as CFDictionary)
-        
-        let status = SecItemAdd(query as CFDictionary, nil)
-        
-        if status == errSecSuccess {
-            return .success(())
-        } else {
-            return .failure(NSError(domain: "\(Bundle.main.bundleIdentifier).Deviceidentifier.Keychain.not.available", code: Int(status)))
+
+        // Remove existing item for this account/service.
+        SecItemDelete(baseQuery as CFDictionary)
+
+        var addQuery = baseQuery
+        addQuery[kSecValueData as String] = data
+
+        // Safer accessibility for background / after reboot.
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
+
+        guard status == errSecSuccess else {
+            let description: String
+            switch status {
+            case errSecInteractionNotAllowed:
+                description = "Keychain interaction not allowed (device locked / protected data not available)."
+            case errSecNotAvailable:
+                description = "Keychain not available."
+            default:
+                description = "Keychain save failed with status \(status)."
+            }
+
+            let error = NSError(
+                domain: "\(bundleId).Deviceidentifier.Keychain",
+                code: Int(status),
+                userInfo: [NSLocalizedDescriptionKey: description]
+            )
+            return .failure(error)
         }
+
+        return .success(())
     }
 }

@@ -74,7 +74,7 @@ import Foundation
           
       case .LogStripeIntentPurchaseStarted: return "Stripe Intent Purchase Started 1"
       case .LogStripeIntentFetchSuccess: return "Stripe Intent Fetch Success 2 - \(IntentFetchMessage.message)"
-      case .LogStripeIntentFetchFailure: return "Stripe Intent Fetch Failure 2 - \(IntentFetchMessage.message)"
+      case .LogStripeIntentFetchFailure: return "Stripe Intent Fetch Failure 2"
       case .LogStripeIntentFlowCompleted: return "Stripe Intent Flow Completed 3"
       case .LogStripeIntentFlowCanceled: return "Stripe Intent Flow Canceled 3"
       case .LogStripeIntentFlowError: return "Stripe Intent Flow Error 3"

@@ -32,8 +32,8 @@ public protocol Purchased {
         params["AppLanguage"] = appLanguage
         params["PlatformVersion"] = UIDevice.current.systemVersion
         params["DeviceIdentifier"] = UIDevice.deviceIdentifier.value ?? ""
+        params["ProductTypeId"] = productId.lowercased().contains("subscri") ? 3 : 1
         params["quantity"] = transaction?.quantity
-
         if let timeInterval = transaction?.signedDate?.timeIntervalSince1970 {
             params["signedDate"] = timeInterval*1000
         }
@@ -62,6 +62,14 @@ public protocol Purchased {
     public let transactionState: TransactionState
     public let signedTransaction: String?
     public let quantity: Int = 1
+    public let storeId:String?
+    public let storeCurrency:String?
+    public let storeCountry:String?
+    public let storePrice:Double
+    public let notificationType:String?
+    public let isSubscription:Bool
+    public let webOrderLineItemID:String?
+    public let productType:Product.ProductType?
 
     public init(from transaction: Transaction, signedTransaction: String) {
         self.productID = transaction.productID
@@ -71,6 +79,30 @@ public protocol Purchased {
         self.transactionState = TransactionState(from: transaction)
         self.signedTransaction = signedTransaction
         self.signedDate = transaction.signedDate
+        self.storePrice = NSDecimalNumber(decimal: transaction.price ?? 0).doubleValue
+        self.notificationType = TransactionReason.from(transaction: transaction, jwt: signedTransaction).rawValue
+        self.isSubscription = transaction.productType == .autoRenewable || transaction.productType == .nonRenewable
+        self.webOrderLineItemID = transaction.webOrderLineItemID
+        self.productType = transaction.productType
+        
+        if #available(iOS 17.0, *) {
+            self.storeId = transaction.storefront.id
+            self.storeCountry = transaction.storefront.countryCode
+            self.storeCurrency = transaction.storefront.currency?.identifier
+        }
+        else
+        {
+            self.storeId = nil
+            self.storeCountry = transaction.storefrontCountryCode
+            if #available(iOS 16.0, *)
+            {
+                self.storeCurrency = transaction.currency?.identifier ?? "USD"
+            }
+            else
+            {
+                self.storeCurrency = transaction.currencyCode ?? "USD"
+            }
+        }
     }
 }
 

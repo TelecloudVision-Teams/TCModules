@@ -337,12 +337,11 @@ class AnalyticsRequest:NSObject
         }
         else
         {
-            if status == .LogIAPSuccessPurchaseAfterSendingData || status == .LogStripeIntentFlowCompleted {
+            if status == .LogStripeIntentFlowCompleted {
                 logCustomPurchaseEvent()
                 log(purchase: purchase, completion: completion)
                 transactionStatus = TransactionStatus.success.rawValue
             }
-            else if status == .LogIAPFailedPurchaseAfterSendingData || status == .LogSubscriptionFailedPurchaseAfterSendingData { transactionStatus = "FAILED" }
             else { return }
         }
         sendLog(transactionStatus: transactionStatus,
